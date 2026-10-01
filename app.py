@@ -94,7 +94,7 @@ with tab1:
 
     if image_source and st.button("Generate Audio Guide"):
         image = Image.open(image_source)
-        st.image(image, use_column_width=True)
+        st.image(image, use_container_width=True)
         
         with st.spinner(f"Analyzing landmark and writing guide in {target_lang}..."):
             loc_context = get_location_context()
