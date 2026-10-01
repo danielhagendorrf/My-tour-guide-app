@@ -10,7 +10,6 @@ from google.api_core.exceptions import ResourceExhausted
 # -----------------------------------------
 # 1. ARCHITECTURE & EXTENSIBILITY SETUP
 # -----------------------------------------
-# Centralized preferences block to prepare for future scope expansion.
 USER_PREFERENCES = {
     "food": ["Charcuterie", "Artisan pastries", "Premium burgers", "Local culinary workshops"],
     "activities": ["Escape rooms", "Trivia and pub quizzes", "Theater performances", "Orienteering"]
@@ -86,12 +85,6 @@ else:
     target_lang = "Hebrew"
     tts_lang = "iw" 
 
-if not api_key:
-    st.warning("Please enter your Gemini API Key in the sidebar to begin.")
-    st.stop()
-
-model = genai.GenerativeModel('gemini-3.5-flash-lite')
-
 # -----------------------------------------
 # 4. MAIN INTERFACE (TABS)
 # -----------------------------------------
@@ -113,21 +106,21 @@ with tab1:
 
     if image_source and st.button("Generate Audio Guide"):
         image = Image.open(image_source)
-        # Note: st.image() is completely removed here to save screen space
+        
         try:
             loc_context = get_location_context()
             prompt = f"""
             {loc_context}
-            Act as an expert, engaging tour guide... [keep your prompt here]
+            Act as an expert, engaging tour guide. Identify the landmark or subject in this image. 
+            Provide a 2-minute fascinating historical overview. End with one interesting fact.
+            Make the tone conversational and easy to listen to.
+            Write the entire response strictly in {target_lang}.
             """
             
             st.write("### Your Guide:")
             
             message_placeholder = st.empty()
             guide_text = ""
-            
-            # Fetch the list of keys from secrets
-            api_keys = st.secrets.get("GEMINI_API_KEYS", [])
             success = False
             
             # 1. LOOP THROUGH THE KEYS
@@ -150,12 +143,11 @@ with tab1:
                     break # Success! Break out of the loop so we don't use the next key
                     
                 except ResourceExhausted:
-                    # 2. CATCH RATE LIMITS
                     # If this key is exhausted, show a tiny toast notification and loop to the next key
                     st.toast("Key limit reached, swapping to backup key...", icon="🔄")
                     continue
             
-            # 3. IF ALL KEYS FAIL
+            # If all keys fail
             if not success:
                 st.error("⚠️ All provided API keys have reached their daily limits. Try again tomorrow.")
             else:
@@ -179,7 +171,10 @@ with tab2:
             st.warning("Please allow location access in the sidebar first!")
         else:
             with st.spinner(f"Scouting the area based on your preferences (in {target_lang})..."):
+                # Use the first key for basic text requests
                 genai.configure(api_key=api_keys[0])
+                model = genai.GenerativeModel('gemini-3.5-flash-lite')
+                
                 loc_context = get_location_context()
                 pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
                 
@@ -232,7 +227,10 @@ with tab3:
         """
         
         with st.spinner("Thinking..."):
+            # Use the first key for basic text requests
             genai.configure(api_key=api_keys[0])
+            model = genai.GenerativeModel('gemini-3.5-flash-lite')
+            
             response = model.generate_content(chat_prompt)
             answer = response.text
             
