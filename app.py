@@ -56,6 +56,8 @@ if "guide_audio" not in st.session_state:
     st.session_state.guide_audio = None
 if "camera_active" not in st.session_state:
     st.session_state.camera_active = False
+if "last_image_id" not in st.session_state:
+    st.session_state.last_image_id = None
 
 with st.sidebar:
     st.header("⚙ Setup & Context")
@@ -102,18 +104,27 @@ with tab1:
         st.rerun()
         
     image_source = None
+    trigger_generation = False
+    
     if st.session_state.camera_active:
         st.info("💡 **Tip:** Tap directly on the camera video feed to snap your photo.")
         camera_photo = back_camera_input()
+        
         if camera_photo:
             image_source = camera_photo
-            st.success("Photo captured! Scroll down to generate the guide.")
+            # If this is a brand new photo, trigger the AI automatically!
+            if st.session_state.last_image_id != camera_photo.getvalue():
+                st.session_state.last_image_id = camera_photo.getvalue()
+                trigger_generation = True
     else:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
+            # For manual uploads, we keep the button so you can confirm the right file
+            if st.button("Generate Audio Guide"):
+                trigger_generation = True
 
-    if image_source and st.button("Generate Audio Guide"):
+    if image_source and trigger_generation:
         image = Image.open(image_source)
         try:
             loc_context = get_location_context()
@@ -146,12 +157,13 @@ with tab1:
                     break 
                     
                 except ResourceExhausted:
-                    st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                    st.toast("Key limit reached, swapping to backup...", icon="🔄")
                     continue
             
             if not success:
-                st.error("⚠️ All provided API keys have reached their daily limits.")
+                st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
             else:
+                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
@@ -159,12 +171,14 @@ with tab1:
                     audio_file = generate_audio(cleaned_text, tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
+                # Auto-close the camera to clean up the screen, then refresh
                 st.session_state.camera_active = False
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
+    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -227,11 +241,11 @@ with tab2:
                         success = True
                         break
                     except ResourceExhausted:
-                        st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                        st.toast("Key limit reached, swapping to backup...", icon="🔄")
                         continue
                 
                 if not success:
-                    st.error("⚠️ All provided API keys have reached their daily limits.")
+                    st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
                 else:
                     st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
                     st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
@@ -275,11 +289,11 @@ with tab3:
                     success = True
                     break
                 except ResourceExhausted:
-                    st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                    st.toast("Key limit reached, swapping to backup...", icon="🔄")
                     continue
             
         if not success:
-            st.error("⚠️ All provided API keys have reached their daily limits.")
+            st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
         else:
             with st.chat_message("assistant"):
                 st.markdown(answer)
