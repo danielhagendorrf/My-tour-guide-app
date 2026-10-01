@@ -5,6 +5,7 @@ from io import BytesIO
 from PIL import Image
 from streamlit_geolocation import streamlit_geolocation
 from streamlit_back_camera_input import back_camera_input
+from google.api_core.exceptions import ResourceExhausted
 
 # -----------------------------------------
 # 1. ARCHITECTURE & EXTENSIBILITY SETUP
@@ -32,6 +33,10 @@ def get_location_context():
         return f"Current Location: {st.session_state.lat} Latitude, {st.session_state.lon} Longitude."
     return "Location unknown."
 
+def clean_for_audio(text):
+    """Removes markdown formatting so the text-to-speech sounds natural."""
+    return text.replace("*", "").replace("#", "").replace('"', "").replace("_", "")
+
 # -----------------------------------------
 # 3. APP INITIALIZATION & SIDEBAR
 # -----------------------------------------
@@ -47,8 +52,13 @@ if "lon" not in st.session_state:
     st.session_state.lon = None
 
 with st.sidebar:
-    st.header("⚙️️ Setup & Context")
-    api_key = st.text_input("Enter Gemini API Key", type="password")
+    st.header("⚙ Setup & Context")
+    
+    # Automatically grab the key from Streamlit Secrets if it exists
+    # If not, fall back to the manual input box
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if not api_key:
+        api_key = st.text_input("Enter Gemini API Key", type="password")
     
     st.subheader("📍 Where am I?")
     st.write("Tap below to share your location for nearby recommendations.")
@@ -81,15 +91,14 @@ model = genai.GenerativeModel('gemini-3.5-flash-lite')
 # -----------------------------------------
 tab1, tab2, tab3 = st.tabs(["📸 Photo Guide", "🧭 Explore Nearby", "💬 Chat & Ask"])
 
-# --- TAB 1: Photo & Audio Guide ---# --- TAB 1: Photo & Audio Guide ---
+# --- TAB 1: Photo & Audio Guide ---
 with tab1:
     st.header("Scan a Landmark")
     st.write("Upload a photo or open the camera to see what's around you.")
     
-    # 1. HIDE CAMERA UNTIL CLICKED
+    # 1. COMPLETELY UNLOAD CAMERA UNTIL CHECKED
     camera_photo = None
-    with st.expander("📷 Tap to Open Camera"):
-        # The mobile view will have a "flip camera" icon to switch to the rear lens
+    if st.checkbox("📷 Turn on Camera"):
         camera_photo = back_camera_input()
         
     uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
@@ -98,52 +107,63 @@ with tab1:
 
     if image_source and st.button("Generate Audio Guide"):
         image = Image.open(image_source)
-        st.image(image, use_container_width=True)
-        
-        # 4. ERROR HANDLING BLOCK
+        # Note: st.image() is completely removed here to save screen space
         try:
             loc_context = get_location_context()
-            
-            # 3. ADAPTIVE PROMPT
             prompt = f"""
             {loc_context}
-            Act as a helpful, conversational travel companion. Look at this image and respond based on what it is:
-            - If it's a landmark or building, give a brief, interesting history.
-            - If it's a sign, menu, or text, explain or translate it.
-            - If it's food or nature, tell me interesting facts about it.
-            Keep it highly relevant to the specific image. Do not use a rigid structure. Keep it under 3 paragraphs.
-            Write the entire response strictly in {target_lang}.
+            Act as an expert, engaging tour guide... [keep your prompt here]
             """
             
             st.write("### Your Guide:")
             
-            # 2. STREAMING FOR INSTANT SPEED (Manual Loop Fix)
-            response = model.generate_content([prompt, image], stream=True)
-            
             message_placeholder = st.empty()
             guide_text = ""
             
-            # Stream the text to the screen chunk by chunk
-            for chunk in response:
-                if chunk.text:
-                    guide_text += chunk.text
-                    message_placeholder.markdown(guide_text + "▌")
+            # Fetch the list of keys from secrets
+            api_keys = st.secrets.get("GEMINI_API_KEYS", [])
+            success = False
             
-            # Remove the blinking cursor when finished
-            message_placeholder.markdown(guide_text)
+            # 1. LOOP THROUGH THE KEYS
+            for key in api_keys:
+                try:
+                    # Configure the AI with the current key in the loop
+                    genai.configure(api_key=key)
+                    model = genai.GenerativeModel('gemini-3.5-flash-lite')
+                    
+                    # Attempt to generate text
+                    response = model.generate_content([prompt, image], stream=True)
+                    
+                    for chunk in response:
+                        if chunk.text:
+                            guide_text += chunk.text
+                            message_placeholder.markdown(guide_text + "▌")
+                    
+                    message_placeholder.markdown(guide_text)
+                    success = True
+                    break # Success! Break out of the loop so we don't use the next key
+                    
+                except ResourceExhausted:
+                    # 2. CATCH RATE LIMITS
+                    # If this key is exhausted, show a tiny toast notification and loop to the next key
+                    st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                    continue
             
-            # Save to chat history
-            st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
-            st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
-            
-            # Generate and play audio (Now guaranteed to be a plain string)
-            with st.spinner("Generating audio narration..."):
-                audio_file = generate_audio(guide_text, tts_lang)
-                st.audio(audio_file, format='audio/mp3')
+            # 3. IF ALL KEYS FAIL
+            if not success:
+                st.error("⚠️ All provided API keys have reached their daily limits. Try again tomorrow.")
+            else:
+                # Save to history and generate audio only if successful
+                st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
+                st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
                 
+                with st.spinner("Generating audio narration..."):
+                    cleaned_text = clean_for_audio(guide_text)
+                    audio_file = generate_audio(cleaned_text, tts_lang)
+                    st.audio(audio_file, format='audio/mp3')
+    
         except Exception as e:
-            # If the API crashes, it will show this clear red error box
-            st.error(f"⚠️ The AI encountered an error. If this happened instantly, check your API key and ensure the model name is 'gemini-2.5-flash'. \n\n**Error Details:** {e}")
+            st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
 # --- TAB 2: Location-Based Personal Recommendations ---
 with tab2:
