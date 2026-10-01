@@ -112,7 +112,6 @@ with tab1:
         
         if camera_photo:
             image_source = camera_photo
-            # If this is a brand new photo, trigger the AI automatically!
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
                 trigger_generation = True
@@ -120,7 +119,6 @@ with tab1:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
-            # For manual uploads, we keep the button so you can confirm the right file
             if st.button("Generate Audio Guide"):
                 trigger_generation = True
 
@@ -163,7 +161,6 @@ with tab1:
             if not success:
                 st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
             else:
-                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
@@ -171,14 +168,12 @@ with tab1:
                     audio_file = generate_audio(cleaned_text, tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
-                # Auto-close the camera to clean up the screen, then refresh
                 st.session_state.camera_active = False
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
-    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -227,14 +222,18 @@ with tab2:
                     """
                 
                 success = False
+                last_error = None
+                
                 for key in api_keys:
                     try:
                         genai.configure(api_key=key)
-                        model = genai.GenerativeModel('gemini-3.5-flash-lite')
                         
+                        # Use Lite model for food (no search), and Standard Flash for Events (needs search)
                         if want_food:
+                            model = genai.GenerativeModel('gemini-3.5-flash-lite')
                             response = model.generate_content(prompt)
                         else:
+                            model = genai.GenerativeModel('gemini-3.5-flash')
                             response = model.generate_content(prompt, tools="google_search_retrieval")
                             
                         recommendations = response.text
@@ -243,9 +242,16 @@ with tab2:
                     except ResourceExhausted:
                         st.toast("Key limit reached, swapping to backup...", icon="🔄")
                         continue
+                    except Exception as e:
+                        # Catch specific tool/search crash
+                        last_error = e
+                        break # Stop the loop so it doesn't just print 3 times
                 
                 if not success:
-                    st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
+                    if last_error:
+                        st.error(f"⚠️ API Error: {last_error}")
+                    else:
+                        st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
                 else:
                     st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
                     st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
@@ -280,6 +286,7 @@ with tab3:
         
         with st.spinner("Thinking..."):
             success = False
+            last_error = None
             for key in api_keys:
                 try:
                     genai.configure(api_key=key)
@@ -291,9 +298,15 @@ with tab3:
                 except ResourceExhausted:
                     st.toast("Key limit reached, swapping to backup...", icon="🔄")
                     continue
+                except Exception as e:
+                    last_error = e
+                    break
             
         if not success:
-            st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
+            if last_error:
+                st.error(f"⚠️ API Error: {last_error}")
+            else:
+                st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
         else:
             with st.chat_message("assistant"):
                 st.markdown(answer)
