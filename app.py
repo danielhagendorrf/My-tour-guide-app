@@ -4,6 +4,8 @@ from gtts import gTTS
 from io import BytesIO
 from PIL import Image
 from datetime import datetime
+import requests
+import re
 from streamlit_geolocation import streamlit_geolocation
 from streamlit_back_camera_input import back_camera_input
 from google.api_core.exceptions import ResourceExhausted
@@ -36,6 +38,27 @@ def get_location_context():
 def clean_for_audio(text):
     """Removes markdown formatting so the text-to-speech sounds natural."""
     return text.replace("*", "").replace("#", "").replace('"', "").replace("_", "")
+
+def fetch_live_search(query):
+    """Custom search agent that scrapes the live web to bypass API restrictions."""
+    url = "https://html.duckduckgo.com/html/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        res = requests.post(url, data={"q": query}, headers=headers, timeout=5)
+        # Find all search result snippets on the page
+        snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', res.text, re.IGNORECASE | re.DOTALL)
+        
+        clean_snippets = []
+        for s in snippets:
+            # Strip all HTML tags to leave just the raw text
+            clean = re.sub(r'<[^>]+>', '', s).strip()
+            clean_snippets.append(clean)
+        
+        if clean_snippets:
+            return "\n- ".join(clean_snippets[:8]) # Return the top 8 live results
+        return "No specific live events found on the web right now."
+    except Exception:
+        return "Live web search is currently offline."
 
 # -----------------------------------------
 # 3. APP INITIALIZATION & SIDEBAR
@@ -112,7 +135,6 @@ with tab1:
         
         if camera_photo:
             image_source = camera_photo
-            # If this is a brand new photo, trigger the AI automatically!
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
                 trigger_generation = True
@@ -120,7 +142,6 @@ with tab1:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
-            # For manual uploads, we keep the button so you can confirm the right file
             if st.button("Generate Audio Guide"):
                 trigger_generation = True
 
@@ -163,7 +184,6 @@ with tab1:
             if not success:
                 st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
             else:
-                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
@@ -171,14 +191,12 @@ with tab1:
                     audio_file = generate_audio(cleaned_text, tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
-                # Auto-close the camera to clean up the screen, then refresh
                 st.session_state.camera_active = False
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
-    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -189,42 +207,6 @@ with tab1:
 # --- TAB 2: Location-Based Personal Recommendations & Events ---
 with tab2:
     st.header("What's Around Me?")
-    
-    # -------------------------------------------------------------
-    # DEBUGGER: Tap this to test the API's search capabilities
-    # -------------------------------------------------------------
-    with st.expander("🛠️ RUN SYSTEM DIAGNOSTIC (DEBUG SEARCH)", expanded=True):
-        if st.button("Run Diagnostic Tests"):
-            st.write("Running tests on API Key 1...")
-            genai.configure(api_key=api_keys[0])
-            
-            st.write("---")
-            st.write("**Test 1: Basic Model (gemini-3.5-flash) - NO SEARCH**")
-            try:
-                m1 = genai.GenerativeModel('gemini-3.5-flash')
-                r1 = m1.generate_content("Say the word 'Hello'.")
-                st.success("Test 1 Passed! The core model works.")
-            except Exception as e:
-                st.error(f"Test 1 Failed: {type(e).__name__} - {e}")
-                
-            st.write("---")
-            st.write("**Test 2: Model WITH tools='google_search_retrieval' (String format)**")
-            try:
-                m2 = genai.GenerativeModel('gemini-3.5-flash')
-                r2 = m2.generate_content("What is the weather in Kyoto today?", tools="google_search_retrieval")
-                st.success("Test 2 Passed! String format works.")
-            except Exception as e:
-                st.error(f"Test 2 Failed: {type(e).__name__} - {e}")
-
-            st.write("---")
-            st.write("**Test 3: Model WITH Dictionary format**")
-            try:
-                m3 = genai.GenerativeModel('gemini-3.5-flash')
-                r3 = m3.generate_content("What is the weather in Kyoto today?", tools=[{"google_search_retrieval": {}}])
-                st.success("Test 3 Passed! Dictionary format works.")
-            except Exception as e:
-                st.error(f"Test 3 Failed: {type(e).__name__} - {e}")
-    # -------------------------------------------------------------
     
     event_count = st.slider("How many events do you want to find?", min_value=3, max_value=10, value=8)
     
@@ -240,27 +222,7 @@ with tab2:
         else:
             with st.spinner(f"Scouting the live web for your area (in {target_lang})..."):
                 loc_context = get_location_context()
-                
-                if want_food:
-                    pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
-                    prompt = f"""
-                    {loc_context}
-                    You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
-                    suggest 2 places to visit and 2 places to eat nearby. 
-                    Tailor these suggestions specifically to the following user preferences: {pref_text}.
-                    Explain exactly why these nearby spots fit their specific tastes.
-                    Write the entire response strictly in {target_lang}.
-                    """
-                else:
-                    current_date = datetime.now().strftime("%A, %B %d, %Y")
-                    prompt = f"""
-                    {loc_context}
-                    Today's date is {current_date}. 
-                    Act as a local event scout with up-to-the-minute knowledge. Find {event_count} trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
-                    Prioritize temporary or seasonal events happening right now.
-                    For each event, include a brief description and the estimated travel time/ride time from the current location.
-                    Write the entire response strictly in {target_lang}.
-                    """
+                current_date = datetime.now().strftime("%A, %B %d, %Y")
                 
                 success = False
                 last_error = None
@@ -270,11 +232,44 @@ with tab2:
                         genai.configure(api_key=key)
                         
                         if want_food:
+                            pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
+                            prompt = f"""
+                            {loc_context}
+                            You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
+                            suggest 2 places to visit and 2 places to eat nearby. 
+                            Tailor these suggestions specifically to the following user preferences: {pref_text}.
+                            Explain exactly why these nearby spots fit their specific tastes.
+                            Write the entire response strictly in {target_lang}.
+                            """
                             model = genai.GenerativeModel('gemini-3.5-flash-lite')
                             response = model.generate_content(prompt)
+                        
                         else:
+                            # 1. Ask the AI what city we are in based on GPS coordinates
+                            model_lite = genai.GenerativeModel('gemini-3.5-flash-lite')
+                            city_response = model_lite.generate_content(f"Based on {loc_context}, what city and country am I in? Reply ONLY with the city name.")
+                            city_name = city_response.text.strip()
+                            
+                            # 2. Run our custom live web search in the background
+                            search_query = f"events festivals popups {city_name} today {current_date}"
+                            live_web_data = fetch_live_search(search_query)
+                            
+                            # 3. Inject the live internet text into the main prompt
+                            prompt = f"""
+                            {loc_context} (City: {city_name})
+                            Today's date is {current_date}. 
+                            
+                            Here is raw, up-to-the-minute data pulled from the live internet:
+                            {live_web_data}
+                            
+                            Act as a local event scout. Based on your internal knowledge AND the live web data above, 
+                            find {event_count} trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
+                            Prioritize temporary or seasonal events happening right now.
+                            For each event, include a brief description and the estimated travel time/ride time from the current location.
+                            Write the entire response strictly in {target_lang}.
+                            """
                             model = genai.GenerativeModel('gemini-3.5-flash')
-                            response = model.generate_content(prompt, tools="google_search_retrieval")
+                            response = model.generate_content(prompt)
                             
                         recommendations = response.text
                         success = True
