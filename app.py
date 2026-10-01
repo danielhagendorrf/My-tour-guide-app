@@ -181,6 +181,9 @@ with tab1:
 with tab2:
     st.header("What's Around Me?")
     
+    # NEW: Configurable event count slider
+    event_count = st.slider("How many events do you want to find?", min_value=3, max_value=10, value=8)
+    
     col1, col2 = st.columns(2)
     with col1:
         want_food = st.button("🍽️ Visit & Eat")
@@ -191,7 +194,7 @@ with tab2:
         if not st.session_state.lat:
             st.warning("Please allow location access in the sidebar first!")
         else:
-            with st.spinner(f"Scouting the area (in {target_lang})..."):
+            with st.spinner(f"Scouting the live web for your area (in {target_lang})..."):
                 genai.configure(api_key=api_keys[0])
                 model = genai.GenerativeModel('gemini-3.5-flash-lite')
                 loc_context = get_location_context()
@@ -211,13 +214,17 @@ with tab2:
                     prompt = f"""
                     {loc_context}
                     Today's date is {current_date}. 
-                    Act as a local event scout with up-to-the-minute knowledge. Find 8 trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
-                    Prioritize temporary or seasonal events happening right now (like the October Moon Lantern Festival in the Bamboo Forest).
+                    Act as a local event scout with up-to-the-minute knowledge. Find {event_count} trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
+                    Prioritize temporary or seasonal events happening right now.
                     For each event, include a brief description and the estimated travel time/ride time from the current location.
                     Write the entire response strictly in {target_lang}.
                     """
                 
-                response = model.generate_content(prompt)
+                # Using Google Search Grounding to find live web results
+                response = model.generate_content(
+                    prompt,
+                    tools="google_search_retrieval"
+                )
                 recommendations = response.text
                 
                 st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
