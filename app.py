@@ -51,7 +51,7 @@ def fetch_live_search_tavily(query, api_key):
         res = requests.post(url, json=payload, timeout=10)
         data = res.json()
         if "results" in data:
-            snippets = [r.get("content", "") for r in data["results"]]
+            snippets = [f"{r.get('content', '')} (Link: {r.get('url', 'N/A')})" for r in data["results"]]
             return "\n- ".join(snippets)
     except Exception as e:
         return f"[Live Search Error: {e}]"
@@ -81,6 +81,9 @@ if "pending_image" not in st.session_state:
     st.session_state.pending_image = None
 if "raw_search_data" not in st.session_state:
     st.session_state.raw_search_data = ""
+# NEW: Track conversation specifically for the current photo guide
+if "photo_chat_history" not in st.session_state:
+    st.session_state.photo_chat_history = []
 
 with st.sidebar:
     st.header("⚙ Setup")
@@ -133,12 +136,15 @@ with tab1:
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
                 st.session_state.pending_image = camera_photo
+                # Clear previous conversation when a new photo is taken
+                st.session_state.photo_chat_history = [] 
                 st.rerun()
     else:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
             if st.button("Generate Audio Guide"):
+                st.session_state.photo_chat_history = [] # Clear previous conversation
                 trigger_generation = True
 
     if image_source and trigger_generation:
@@ -171,6 +177,8 @@ with tab1:
             
             if success:
                 st.session_state.guide_text = temp_guide_text
+                # Initialize the chat history with the guide's initial response
+                st.session_state.photo_chat_history = [{"role": "assistant", "content": temp_guide_text}]
                 with st.spinner("Generating audio narration..."):
                     audio_file = generate_audio(clean_for_audio(temp_guide_text), tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
@@ -182,34 +190,42 @@ with tab1:
         except Exception as e:
             st.error(f"⚠️ Error: {e}")
 
-    # Guide Display & Inline Follow-up
+    # Guide Display & Multi-Turn Conversation
     if st.session_state.guide_text:
         st.write("---")
-        st.write("### Your Latest Guide:")
-        st.markdown(st.session_state.guide_text)
-        if st.session_state.guide_audio:
-            st.audio(st.session_state.guide_audio, format='audio/mp3')
-            
-        st.write("#### Have a follow-up question?")
-        colA, colB = st.columns([4, 1])
-        with colA:
-            photo_q = st.text_input("Ask about this landmark...", key="photo_q", label_visibility="collapsed")
-        with colB:
-            ask_btn = st.button("Ask")
-            
-        if ask_btn and photo_q:
+        st.write("### Your Guide:")
+        
+        # Display the full conversation history for this photo
+        for msg in st.session_state.photo_chat_history:
+             with st.chat_message(msg["role"]):
+                 st.markdown(msg["content"])
+                 # If this is the very first message (the guide itself), display the audio player
+                 if msg == st.session_state.photo_chat_history[0] and st.session_state.guide_audio:
+                     st.audio(st.session_state.guide_audio, format='audio/mp3')
+
+        # Multi-turn chat input specifically for the photo guide
+        if photo_q := st.chat_input("Ask about this landmark...", key="photo_chat_input"):
+            with st.chat_message("user"):
+                st.markdown(photo_q)
+            st.session_state.photo_chat_history.append({"role": "user", "content": photo_q})
+
             with st.spinner("Thinking..."):
                 genai.configure(api_key=api_keys[0])
                 model = genai.GenerativeModel('gemini-3.5-flash-lite')
-                history = f"AI Guide Output: {st.session_state.guide_text}\nUser Question: {photo_q}"
+                
+                # Build context from the photo chat history
+                history = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.photo_chat_history[-5:]])
                 ans = model.generate_content(f"{history}\nAnswer strictly in {target_lang}.").text
-                st.info(ans)
+                
+                with st.chat_message("assistant"):
+                    st.markdown(ans)
+                st.session_state.photo_chat_history.append({"role": "assistant", "content": ans})
+
 
 # --- TAB 2: Location-Based Personal Recommendations & Events ---
 with tab2:
     st.header("What's Around Me?")
     
-    # Inline Location UX
     if not st.session_state.lat:
         st.warning("📍 I need your location to find nearby places.")
         location = streamlit_geolocation()
@@ -218,19 +234,27 @@ with tab2:
             st.session_state.lon = location['longitude']
             st.rerun()
             
-    custom_search = st.text_input("Looking for something specific?", placeholder="e.g., traditional knife forging, hidden matcha cafes, vintage kimonos...")
+    # NEW: Enhanced Filtering Options
+    st.subheader("Filter Your Search")
+    colA, colB = st.columns(2)
+    with colA:
+        search_category = st.multiselect(
+            "What are you looking for?",
+            ["Hidden Gems", "Seasonal Pop-ups", "Traditional Crafts", "Late Night Dining", "Local Markets", "Nature & Parks"],
+            default=["Hidden Gems", "Seasonal Pop-ups"]
+        )
+    with colB:
+        time_horizon = st.selectbox(
+            "When?",
+            ["Right Now", "Tonight", "Tomorrow", "This Weekend"]
+        )
+
+    custom_search = st.text_input("Anything else? (Optional)", placeholder="e.g., vintage kimonos, specific dietary needs...")
     event_count = st.slider("How many options do you want?", min_value=3, max_value=10, value=5)
     
-    col1, col2, col3 = st.columns(3)
-    with col1: want_food = st.button("🍽️ Visit & Eat")
-    with col2: want_events = st.button("🎉 Trending Events")
-    with col3: want_custom = st.button("🔍 Find Custom")
+    want_custom = st.button("🔍 Find Specific Recommendations")
 
-    trigger = "food" if want_food else "events" if want_events else "custom" if want_custom and custom_search else None
-    if want_custom and not custom_search:
-        st.warning("Please type something in the custom search box first!")
-
-    if trigger and st.session_state.lat:
+    if want_custom and st.session_state.lat:
         with st.spinner(f"Scouting the live web (in {target_lang})..."):
             loc_context = get_location_context()
             current_date = datetime.now().strftime("%A, %B %d, %Y")
@@ -242,36 +266,40 @@ with tab2:
                     model_lite = genai.GenerativeModel('gemini-3.5-flash-lite')
                     model_heavy = genai.GenerativeModel('gemini-3.5-flash')
                     
-                    if trigger == "food":
-                        pref = f"Food: {', '.join(USER_PREFERENCES['food'])}. Activities: {', '.join(USER_PREFERENCES['activities'])}."
-                        prompt = f"{loc_context}\nSuggest {event_count} places to visit and eat nearby tailoring to: {pref}.\nAnswer in {target_lang}."
-                        response = model_lite.generate_content(prompt).text
-                        st.session_state.raw_search_data = "No live web search used for food."
-                    else:
-                        city_name = model_lite.generate_content(f"Based on {loc_context}, what city am I in? Reply ONLY with the city name.").text.strip()
+                    city_name = model_lite.generate_content(f"Based on {loc_context}, what city am I in? Reply ONLY with the city name.").text.strip()
+                    
+                    # Combine filters and custom input into a robust search query
+                    category_string = " ".join(search_category)
+                    base_intent = f"{category_string} {time_horizon} {custom_search}"
+                    
+                    smart_keywords = model_lite.generate_content(f"Translate this intent into the best Google search keywords for Japan: '{base_intent}'").text.strip()
+                    search_query = f"{smart_keywords} {city_name}"
                         
-                        # AI Keyword Translation to avoid the "light show" vs "illumination" mismatch
-                        if trigger == "events":
-                            search_query = f"events festivals popups illuminations {city_name} today {current_date}"
-                        else:
-                            smart_keywords = model_lite.generate_content(f"Translate this intent into the best Google search keywords for Japan: '{custom_search}'").text.strip()
-                            search_query = f"{smart_keywords} {city_name}"
-                            
-                        live_web_data = fetch_live_search_tavily(search_query, tavily_key)
-                        st.session_state.raw_search_data = f"**Query Sent:** {search_query}\n\n**Raw Results:**\n{live_web_data}"
-                        
-                        prompt = f"""
-                        {loc_context} (City: {city_name})
-                        Today's date is {current_date}. 
-                        Raw live internet data: {live_web_data}
-                        
-                        Based on your internal knowledge AND the live web data, find {event_count} highly relevant recommendations matching: '{custom_search if custom_search else "trending seasonal events and pop-ups"}'.
-                        Write the response strictly in {target_lang}.
-                        """
-                        response = model_heavy.generate_content(prompt).text
+                    live_web_data = fetch_live_search_tavily(search_query, tavily_key)
+                    st.session_state.raw_search_data = f"**Query Sent:** {search_query}\n\n**Raw Results:**\n{live_web_data}"
+                    
+                    prompt = f"""
+                    {loc_context} (City: {city_name})
+                    Today's date is {current_date}. 
+                    Raw live internet data (includes links): {live_web_data}
+                    
+                    Act as an elite local scout. Based on your massive internal knowledge AND the live web data provided above, 
+                    find {event_count} highly relevant recommendations matching these criteria:
+                    - Categories: {category_string}
+                    - Timeframe: {time_horizon}
+                    - Additional preferences: '{custom_search if custom_search else "None"}'
+                    
+                    For each recommendation, include:
+                    1. A brief description.
+                    2. The estimated travel time from my current coordinates.
+                    3. ALWAYS include a clickable Markdown link to the official website or Google Maps location if available in the raw data or your internal knowledge.
+                    
+                    Write the response strictly in {target_lang}.
+                    """
+                    response = model_heavy.generate_content(prompt).text
                         
                     st.markdown(response)
-                    st.session_state.chat_history.append({"role": "user", "content": f"Find: {trigger}"})
+                    st.session_state.chat_history.append({"role": "user", "content": f"Find: {base_intent}"})
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
                     success = True
                     break
@@ -281,7 +309,6 @@ with tab2:
             if not success:
                 st.error("⚠️ Rate limit reached.")
 
-    # Transparency Dropdown
     if st.session_state.raw_search_data:
         with st.expander("🔍 See Raw Search Results (Debug)"):
             st.write(st.session_state.raw_search_data)
@@ -293,7 +320,7 @@ with tab3:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             
-    if user_question := st.chat_input("E.g., What time does the restaurant open?"):
+    if user_question := st.chat_input("E.g., What time does the restaurant open?", key="general_chat_input"):
         with st.chat_message("user"): st.markdown(user_question)
         st.session_state.chat_history.append({"role": "user", "content": user_question})
         
