@@ -112,6 +112,7 @@ with tab1:
         
         if camera_photo:
             image_source = camera_photo
+            # If this is a brand new photo, trigger the AI automatically!
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
                 trigger_generation = True
@@ -119,6 +120,7 @@ with tab1:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
+            # For manual uploads, we keep the button so you can confirm the right file
             if st.button("Generate Audio Guide"):
                 trigger_generation = True
 
@@ -161,6 +163,7 @@ with tab1:
             if not success:
                 st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
             else:
+                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
@@ -168,12 +171,14 @@ with tab1:
                     audio_file = generate_audio(cleaned_text, tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
+                # Auto-close the camera to clean up the screen, then refresh
                 st.session_state.camera_active = False
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
+    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -184,6 +189,42 @@ with tab1:
 # --- TAB 2: Location-Based Personal Recommendations & Events ---
 with tab2:
     st.header("What's Around Me?")
+    
+    # -------------------------------------------------------------
+    # DEBUGGER: Tap this to test the API's search capabilities
+    # -------------------------------------------------------------
+    with st.expander("🛠️ RUN SYSTEM DIAGNOSTIC (DEBUG SEARCH)", expanded=True):
+        if st.button("Run Diagnostic Tests"):
+            st.write("Running tests on API Key 1...")
+            genai.configure(api_key=api_keys[0])
+            
+            st.write("---")
+            st.write("**Test 1: Basic Model (gemini-3.5-flash) - NO SEARCH**")
+            try:
+                m1 = genai.GenerativeModel('gemini-3.5-flash')
+                r1 = m1.generate_content("Say the word 'Hello'.")
+                st.success("Test 1 Passed! The core model works.")
+            except Exception as e:
+                st.error(f"Test 1 Failed: {type(e).__name__} - {e}")
+                
+            st.write("---")
+            st.write("**Test 2: Model WITH tools='google_search_retrieval' (String format)**")
+            try:
+                m2 = genai.GenerativeModel('gemini-3.5-flash')
+                r2 = m2.generate_content("What is the weather in Kyoto today?", tools="google_search_retrieval")
+                st.success("Test 2 Passed! String format works.")
+            except Exception as e:
+                st.error(f"Test 2 Failed: {type(e).__name__} - {e}")
+
+            st.write("---")
+            st.write("**Test 3: Model WITH Dictionary format**")
+            try:
+                m3 = genai.GenerativeModel('gemini-3.5-flash')
+                r3 = m3.generate_content("What is the weather in Kyoto today?", tools=[{"google_search_retrieval": {}}])
+                st.success("Test 3 Passed! Dictionary format works.")
+            except Exception as e:
+                st.error(f"Test 3 Failed: {type(e).__name__} - {e}")
+    # -------------------------------------------------------------
     
     event_count = st.slider("How many events do you want to find?", min_value=3, max_value=10, value=8)
     
@@ -228,7 +269,6 @@ with tab2:
                     try:
                         genai.configure(api_key=key)
                         
-                        # Use Lite model for food (no search), and Standard Flash for Events (needs search)
                         if want_food:
                             model = genai.GenerativeModel('gemini-3.5-flash-lite')
                             response = model.generate_content(prompt)
@@ -243,9 +283,8 @@ with tab2:
                         st.toast("Key limit reached, swapping to backup...", icon="🔄")
                         continue
                     except Exception as e:
-                        # Catch specific tool/search crash
                         last_error = e
-                        break # Stop the loop so it doesn't just print 3 times
+                        break 
                 
                 if not success:
                     if last_error:
