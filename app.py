@@ -4,6 +4,7 @@ from gtts import gTTS
 from io import BytesIO
 from PIL import Image
 from streamlit_geolocation import streamlit_geolocation
+from streamlit_back_camera_input import back_camera_input
 
 # -----------------------------------------
 # 1. ARCHITECTURE & EXTENSIBILITY SETUP
@@ -73,51 +74,66 @@ if not api_key:
     st.stop()
 
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-3.8-flash')
+model = genai.GenerativeModel('gemini-3.5-flash-lite')
 
 # -----------------------------------------
 # 4. MAIN INTERFACE (TABS)
 # -----------------------------------------
 tab1, tab2, tab3 = st.tabs(["📸 Photo Guide", "🧭 Explore Nearby", "💬 Chat & Ask"])
 
-# --- TAB 1: Photo & Audio Guide ---
+# --- TAB 1: Photo & Audio Guide ---# --- TAB 1: Photo & Audio Guide ---
 with tab1:
     st.header("Scan a Landmark")
-    st.write("Use your camera or upload a photo to identify what you are looking at.")
+    st.write("Upload a photo or open the camera to see what's around you.")
     
-    # Native camera integration for mobile, with fallback to file upload
-    camera_photo = st.camera_input("Take a photo directly")
+    # 1. HIDE CAMERA UNTIL CLICKED
+    camera_photo = None
+    with st.expander("📷 Tap to Open Camera"):
+        # The mobile view will have a "flip camera" icon to switch to the rear lens
+        camera_photo = back_camera_input()
+        
     uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         
-    # Determine which image source to use
     image_source = camera_photo if camera_photo else uploaded_file
 
     if image_source and st.button("Generate Audio Guide"):
         image = Image.open(image_source)
         st.image(image, use_container_width=True)
         
-        with st.spinner(f"Analyzing landmark and writing guide in {target_lang}..."):
+        # 4. ERROR HANDLING BLOCK
+        try:
             loc_context = get_location_context()
+            
+            # 3. ADAPTIVE PROMPT
             prompt = f"""
             {loc_context}
-            Act as an expert, engaging tour guide. Identify the landmark or subject in this image. 
-            Provide a 2-minute fascinating historical overview. End with one interesting fact.
-            Make the tone conversational and easy to listen to.
+            Act as a helpful, conversational travel companion. Look at this image and respond based on what it is:
+            - If it's a landmark or building, give a brief, interesting history.
+            - If it's a sign, menu, or text, explain or translate it.
+            - If it's food or nature, tell me interesting facts about it.
+            Keep it highly relevant to the specific image. Do not use a rigid structure. Keep it under 3 paragraphs.
             Write the entire response strictly in {target_lang}.
             """
             
-            response = model.generate_content([prompt, image])
-            guide_text = response.text
+            st.write("### Your Guide:")
             
-            # Save to chat history for context
+            # 2. STREAMING FOR INSTANT SPEED
+            # This makes the text appear word-by-word instantly
+            response = model.generate_content([prompt, image], stream=True)
+            guide_text = st.write_stream(response)
+            
+            # Save to chat history
             st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
             st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
             
-            st.write(guide_text)
-            
-            # Generate and play audio
-            audio_file = generate_audio(guide_text, tts_lang)
-            st.audio(audio_file, format='audio/mp3')
+            # Generate and play audio (Audio still has to wait for text to finish generating)
+            with st.spinner("Generating audio narration..."):
+                audio_file = generate_audio(guide_text, tts_lang)
+                st.audio(audio_file, format='audio/mp3')
+                
+        except Exception as e:
+            # If the API crashes, it will show this clear red error box
+            st.error(f"⚠️ The AI encountered an error. If this happened instantly, check your API key and ensure the model name is 'gemini-2.5-flash'. \n\n**Error Details:** {e}")
 
 # --- TAB 2: Location-Based Personal Recommendations ---
 with tab2:
