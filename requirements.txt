@@ -3,3 +3,4 @@ google-generativeai
 gTTS
 pillow
 streamlit-geolocation
+streamlit-back-camera-input
