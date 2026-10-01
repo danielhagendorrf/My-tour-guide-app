@@ -97,7 +97,7 @@ tab1, tab2, tab3 = st.tabs(["📸 Photo Guide", "🧭 Explore Nearby", "💬 Cha
 with tab1:
     st.header("Scan a Landmark")
     
-    # 1. FIXED CAMERA UX
+    # FIXED CAMERA UX
     if st.button("📷 Open / Close Camera"):
         st.session_state.camera_active = not st.session_state.camera_active
         st.rerun()
@@ -153,7 +153,7 @@ with tab1:
             if not success:
                 st.error("⚠️ All provided API keys have reached their daily limits.")
             else:
-                # 2. SAVE STATE PERMANENTLY
+                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
@@ -211,8 +211,8 @@ with tab2:
                     prompt = f"""
                     {loc_context}
                     Today's date is {current_date}. 
-                    Act as a local event scout. Find trending, pop-up, or special events (festivals, markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
-                    Prioritize them chronologically.
+                    Act as a local event scout with up-to-the-minute knowledge. Find 8 trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
+                    Prioritize temporary or seasonal events happening right now (like the October Moon Lantern Festival in the Bamboo Forest).
                     For each event, include a brief description and the estimated travel time/ride time from the current location.
                     Write the entire response strictly in {target_lang}.
                     """
