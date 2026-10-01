@@ -3,6 +3,7 @@ import google.generativeai as genai
 from gtts import gTTS
 from io import BytesIO
 from PIL import Image
+from datetime import datetime
 from streamlit_geolocation import streamlit_geolocation
 from streamlit_back_camera_input import back_camera_input
 from google.api_core.exceptions import ResourceExhausted
@@ -19,7 +20,7 @@ USER_PREFERENCES = {
 # 2. HELPER FUNCTIONS
 # -----------------------------------------
 def generate_audio(text, lang_code):
-    """Converts text to speech and returns an audio byte stream in the selected language."""
+    """Converts text to speech and returns an audio byte stream."""
     tts = gTTS(text=text, lang=lang_code, slow=False)
     fp = BytesIO()
     tts.write_to_fp(fp)
@@ -42,25 +43,28 @@ def clean_for_audio(text):
 st.set_page_config(page_title="Personal AI Guide", layout="wide")
 st.title("🌍 My Personal AI Tour Guide")
 
-# Initialize session state for memory
+# Initialize session states
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "lat" not in st.session_state:
     st.session_state.lat = None
 if "lon" not in st.session_state:
     st.session_state.lon = None
+if "guide_text" not in st.session_state:
+    st.session_state.guide_text = ""
+if "guide_audio" not in st.session_state:
+    st.session_state.guide_audio = None
+if "camera_active" not in st.session_state:
+    st.session_state.camera_active = False
 
 with st.sidebar:
     st.header("⚙ Setup & Context")
     
-    # Look for the list of keys. If it doesn't exist, return an empty list.
     api_keys = st.secrets.get("GEMINI_API_KEYS", [])
-    
-    # If the list is empty, force the user to type one in manually
     if not api_keys:
         manual_key = st.text_input("Enter Gemini API Key", type="password")
         if manual_key:
-            api_keys = [manual_key] # Turn it into a list so the rest of the code works
+            api_keys = [manual_key]
             
     if not api_keys:
         st.warning("Please enter your Gemini API Key in the sidebar to begin.")
@@ -77,7 +81,6 @@ with st.sidebar:
     st.subheader("🌐 Language / שפה")
     lang_choice = st.radio("Select your preferred language:", ["English", "Hebrew (עברית)"])
 
-# Set Language Variables
 if lang_choice == "English":
     target_lang = "English"
     tts_lang = "en"
@@ -93,20 +96,26 @@ tab1, tab2, tab3 = st.tabs(["📸 Photo Guide", "🧭 Explore Nearby", "💬 Cha
 # --- TAB 1: Photo & Audio Guide ---
 with tab1:
     st.header("Scan a Landmark")
-    st.write("Upload a photo or open the camera to see what's around you.")
     
-    # 1. COMPLETELY UNLOAD CAMERA UNTIL CHECKED
-    camera_photo = None
-    if st.checkbox("📷 Turn on Camera"):
+    # 1. FIXED CAMERA UX
+    if st.button("📷 Open / Close Camera"):
+        st.session_state.camera_active = not st.session_state.camera_active
+        st.rerun()
+        
+    image_source = None
+    if st.session_state.camera_active:
+        st.info("💡 **Tip:** Tap directly on the camera video feed to snap your photo.")
         camera_photo = back_camera_input()
-        
-    uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
-        
-    image_source = camera_photo if camera_photo else uploaded_file
+        if camera_photo:
+            image_source = camera_photo
+            st.success("Photo captured! Scroll down to generate the guide.")
+    else:
+        uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
+        if uploaded_file:
+            image_source = uploaded_file
 
     if image_source and st.button("Generate Audio Guide"):
         image = Image.open(image_source)
-        
         try:
             loc_context = get_location_context()
             prompt = f"""
@@ -117,81 +126,101 @@ with tab1:
             Write the entire response strictly in {target_lang}.
             """
             
-            st.write("### Your Guide:")
-            
+            st.write("### Generating Your Guide...")
             message_placeholder = st.empty()
-            guide_text = ""
+            temp_guide_text = ""
             success = False
             
-            # 1. LOOP THROUGH THE KEYS
             for key in api_keys:
                 try:
-                    # Configure the AI with the current key in the loop
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel('gemini-3.5-flash-lite')
-                    
-                    # Attempt to generate text
                     response = model.generate_content([prompt, image], stream=True)
                     
                     for chunk in response:
                         if chunk.text:
-                            guide_text += chunk.text
-                            message_placeholder.markdown(guide_text + "▌")
+                            temp_guide_text += chunk.text
+                            message_placeholder.markdown(temp_guide_text + "▌")
                     
-                    message_placeholder.markdown(guide_text)
+                    message_placeholder.markdown(temp_guide_text)
                     success = True
-                    break # Success! Break out of the loop so we don't use the next key
+                    break 
                     
                 except ResourceExhausted:
-                    # If this key is exhausted, show a tiny toast notification and loop to the next key
                     st.toast("Key limit reached, swapping to backup key...", icon="🔄")
                     continue
             
-            # If all keys fail
             if not success:
-                st.error("⚠️ All provided API keys have reached their daily limits. Try again tomorrow.")
+                st.error("⚠️ All provided API keys have reached their daily limits.")
             else:
-                # Save to history and generate audio only if successful
-                st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
-                st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
+                # 2. SAVE STATE PERMANENTLY
+                st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
-                    cleaned_text = clean_for_audio(guide_text)
+                    cleaned_text = clean_for_audio(temp_guide_text)
                     audio_file = generate_audio(cleaned_text, tts_lang)
-                    st.audio(audio_file, format='audio/mp3')
+                    # Save the raw bytes so it survives app reruns
+                    st.session_state.guide_audio = audio_file.getvalue() 
+                
+                # Auto-close the camera to clean up the screen, then refresh
+                st.session_state.camera_active = False
+                st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
-# --- TAB 2: Location-Based Personal Recommendations ---
+    # ALWAYS display the saved guide if it exists
+    if st.session_state.guide_text:
+        st.write("---")
+        st.write("### Your Latest Guide:")
+        st.markdown(st.session_state.guide_text)
+        if st.session_state.guide_audio:
+            st.audio(st.session_state.guide_audio, format='audio/mp3')
+
+# --- TAB 2: Location-Based Personal Recommendations & Events ---
 with tab2:
     st.header("What's Around Me?")
-    if st.button("Find Places to Visit & Eat"):
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        want_food = st.button("🍽️ Visit & Eat")
+    with col2:
+        want_events = st.button("🎉 Trending Events")
+
+    if want_food or want_events:
         if not st.session_state.lat:
             st.warning("Please allow location access in the sidebar first!")
         else:
-            with st.spinner(f"Scouting the area based on your preferences (in {target_lang})..."):
-                # Use the first key for basic text requests
+            with st.spinner(f"Scouting the area (in {target_lang})..."):
                 genai.configure(api_key=api_keys[0])
                 model = genai.GenerativeModel('gemini-3.5-flash-lite')
-                
                 loc_context = get_location_context()
-                pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
                 
-                prompt = f"""
-                {loc_context}
-                You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
-                suggest 2 places to visit and 2 places to eat nearby. 
-                Tailor these suggestions specifically to the following user preferences: {pref_text}.
-                Explain exactly why these nearby spots fit their specific tastes.
-                Write the entire response strictly in {target_lang}.
-                """
+                if want_food:
+                    pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
+                    prompt = f"""
+                    {loc_context}
+                    You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
+                    suggest 2 places to visit and 2 places to eat nearby. 
+                    Tailor these suggestions specifically to the following user preferences: {pref_text}.
+                    Explain exactly why these nearby spots fit their specific tastes.
+                    Write the entire response strictly in {target_lang}.
+                    """
+                else:
+                    current_date = datetime.now().strftime("%A, %B %d, %Y")
+                    prompt = f"""
+                    {loc_context}
+                    Today's date is {current_date}. 
+                    Act as a local event scout. Find trending, pop-up, or special events (festivals, markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
+                    Prioritize them chronologically.
+                    For each event, include a brief description and the estimated travel time/ride time from the current location.
+                    Write the entire response strictly in {target_lang}.
+                    """
                 
                 response = model.generate_content(prompt)
                 recommendations = response.text
                 
-                # Save to chat history
-                st.session_state.chat_history.append({"role": "user", "content": f"What is around me based on my location and preferences? Answer in {target_lang}."})
+                st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
                 st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
                 
                 st.markdown(recommendations)
@@ -201,19 +230,16 @@ with tab3:
     st.header("Ask Questions")
     st.write("Ask follow-up questions about the tour guide audio, the recommendations, or anything else nearby.")
     
-    # Display chat history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             
-    # Chat Input
     if user_question := st.chat_input("E.g., What time does the restaurant open?"):
         with st.chat_message("user"):
             st.markdown(user_question)
             
         st.session_state.chat_history.append({"role": "user", "content": user_question})
         
-        # Build prompt with history for context
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.chat_history[-5:]])
         loc_context = get_location_context()
         
@@ -227,10 +253,8 @@ with tab3:
         """
         
         with st.spinner("Thinking..."):
-            # Use the first key for basic text requests
             genai.configure(api_key=api_keys[0])
             model = genai.GenerativeModel('gemini-3.5-flash-lite')
-            
             response = model.generate_content(chat_prompt)
             answer = response.text
             
