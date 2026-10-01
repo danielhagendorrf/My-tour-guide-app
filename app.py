@@ -4,8 +4,6 @@ from gtts import gTTS
 from io import BytesIO
 from PIL import Image
 from datetime import datetime
-import requests
-import re
 from streamlit_geolocation import streamlit_geolocation
 from streamlit_back_camera_input import back_camera_input
 from google.api_core.exceptions import ResourceExhausted
@@ -38,27 +36,6 @@ def get_location_context():
 def clean_for_audio(text):
     """Removes markdown formatting so the text-to-speech sounds natural."""
     return text.replace("*", "").replace("#", "").replace('"', "").replace("_", "")
-
-def fetch_live_search(query):
-    """Custom search agent that scrapes the live web to bypass API restrictions."""
-    url = "https://html.duckduckgo.com/html/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        res = requests.post(url, data={"q": query}, headers=headers, timeout=5)
-        # Find all search result snippets on the page
-        snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', res.text, re.IGNORECASE | re.DOTALL)
-        
-        clean_snippets = []
-        for s in snippets:
-            # Strip all HTML tags to leave just the raw text
-            clean = re.sub(r'<[^>]+>', '', s).strip()
-            clean_snippets.append(clean)
-        
-        if clean_snippets:
-            return "\n- ".join(clean_snippets[:8]) # Return the top 8 live results
-        return "No specific live events found on the web right now."
-    except Exception:
-        return "Live web search is currently offline."
 
 # -----------------------------------------
 # 3. APP INITIALIZATION & SIDEBAR
@@ -135,6 +112,7 @@ with tab1:
         
         if camera_photo:
             image_source = camera_photo
+            # If this is a brand new photo, trigger the AI automatically!
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
                 trigger_generation = True
@@ -142,6 +120,7 @@ with tab1:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
+            # For manual uploads, we keep the button so you can confirm the right file
             if st.button("Generate Audio Guide"):
                 trigger_generation = True
 
@@ -220,9 +199,31 @@ with tab2:
         if not st.session_state.lat:
             st.warning("Please allow location access in the sidebar first!")
         else:
-            with st.spinner(f"Scouting the live web for your area (in {target_lang})..."):
+            with st.spinner(f"Scouting the area (in {target_lang})..."):
                 loc_context = get_location_context()
                 current_date = datetime.now().strftime("%A, %B %d, %Y")
+                
+                if want_food:
+                    pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
+                    prompt = f"""
+                    {loc_context}
+                    You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
+                    suggest 2 places to visit and 2 places to eat nearby. 
+                    Tailor these suggestions specifically to the following user preferences: {pref_text}.
+                    Explain exactly why these nearby spots fit their specific tastes.
+                    Write the entire response strictly in {target_lang}.
+                    """
+                else:
+                    prompt = f"""
+                    {loc_context}
+                    Today's date is {current_date}. 
+                    Act as an elite local event scout with deep knowledge of Japanese seasonal events and pop-ups.
+                    Based purely on these exact coordinates and the current date/season, deduce what city and neighborhood I am in.
+                    Then, find {event_count} trending, seasonal, or special events (festivals, night illuminations, markets, exhibitions) happening nearby over the next few days.
+                    Prioritize temporary/seasonal events (e.g., autumn illuminations, specific local festivals) over permanent museums.
+                    For each event, include a brief description and the estimated travel time/ride time from my current coordinates.
+                    Write the entire response strictly in {target_lang}.
+                    """
                 
                 success = False
                 last_error = None
@@ -232,45 +233,13 @@ with tab2:
                         genai.configure(api_key=key)
                         
                         if want_food:
-                            pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
-                            prompt = f"""
-                            {loc_context}
-                            You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
-                            suggest 2 places to visit and 2 places to eat nearby. 
-                            Tailor these suggestions specifically to the following user preferences: {pref_text}.
-                            Explain exactly why these nearby spots fit their specific tastes.
-                            Write the entire response strictly in {target_lang}.
-                            """
+                            # Lite model is fine for general food recommendations
                             model = genai.GenerativeModel('gemini-3.5-flash-lite')
-                            response = model.generate_content(prompt)
-                        
                         else:
-                            # 1. Ask the AI what city we are in based on GPS coordinates
-                            model_lite = genai.GenerativeModel('gemini-3.5-flash-lite')
-                            city_response = model_lite.generate_content(f"Based on {loc_context}, what city and country am I in? Reply ONLY with the city name.")
-                            city_name = city_response.text.strip()
-                            
-                            # 2. Run our custom live web search in the background
-                            search_query = f"events festivals popups {city_name} today {current_date}"
-                            live_web_data = fetch_live_search(search_query)
-                            
-                            # 3. Inject the live internet text into the main prompt
-                            prompt = f"""
-                            {loc_context} (City: {city_name})
-                            Today's date is {current_date}. 
-                            
-                            Here is raw, up-to-the-minute data pulled from the live internet:
-                            {live_web_data}
-                            
-                            Act as a local event scout. Based on your internal knowledge AND the live web data above, 
-                            find {event_count} trending, pop-up, or special events (festivals, light shows, night markets, exhibitions, nightlife) happening around these exact coordinates over the next few days.
-                            Prioritize temporary or seasonal events happening right now.
-                            For each event, include a brief description and the estimated travel time/ride time from the current location.
-                            Write the entire response strictly in {target_lang}.
-                            """
+                            # We MUST use the big 3.5-Flash model here so it has the deep memory to know local events without search
                             model = genai.GenerativeModel('gemini-3.5-flash')
-                            response = model.generate_content(prompt)
                             
+                        response = model.generate_content(prompt)
                         recommendations = response.text
                         success = True
                         break
