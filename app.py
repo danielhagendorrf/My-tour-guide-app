@@ -116,20 +116,29 @@ with tab1:
             """
             
             st.write("### Your Guide:")
-            
-            # 2. STREAMING FOR INSTANT SPEED
-            # This makes the text appear word-by-word instantly
-            response = model.generate_content([prompt, image], stream=True)
-            guide_text = st.write_stream(response)
-            
-            # Save to chat history
-            st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
-            st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
-            
-            # Generate and play audio (Audio still has to wait for text to finish generating)
-            with st.spinner("Generating audio narration..."):
-                audio_file = generate_audio(guide_text, tts_lang)
-                st.audio(audio_file, format='audio/mp3')
+            # 2. STREAMING FOR INSTANT SPEED (Manual Loop Fix)
+        response = model.generate_content([prompt, image], stream=True)
+        
+        message_placeholder = st.empty()
+        guide_text = ""
+        
+        # Stream the text to the screen chunk by chunk
+        for chunk in response:
+            if chunk.text:
+                guide_text += chunk.text
+                message_placeholder.markdown(guide_text + "▌")
+        
+        # Remove the blinking cursor when finished
+        message_placeholder.markdown(guide_text)
+        
+        # Save to chat history
+        st.session_state.chat_history.append({"role": "user", "content": f"Tell me about the landmark in the photo I just uploaded. Answer in {target_lang}."})
+        st.session_state.chat_history.append({"role": "assistant", "content": guide_text})
+        
+        # Generate and play audio (Now guaranteed to be a plain string)
+        with st.spinner("Generating audio narration..."):
+            audio_file = generate_audio(guide_text, tts_lang)
+            st.audio(audio_file, format='audio/mp3')
                 
         except Exception as e:
             # If the API crashes, it will show this clear red error box
