@@ -97,7 +97,6 @@ tab1, tab2, tab3 = st.tabs(["📸 Photo Guide", "🧭 Explore Nearby", "💬 Cha
 with tab1:
     st.header("Scan a Landmark")
     
-    # FIXED CAMERA UX
     if st.button("📷 Open / Close Camera"):
         st.session_state.camera_active = not st.session_state.camera_active
         st.rerun()
@@ -153,23 +152,19 @@ with tab1:
             if not success:
                 st.error("⚠️ All provided API keys have reached their daily limits.")
             else:
-                # SAVE STATE PERMANENTLY
                 st.session_state.guide_text = temp_guide_text
                 
                 with st.spinner("Generating audio narration..."):
                     cleaned_text = clean_for_audio(temp_guide_text)
                     audio_file = generate_audio(cleaned_text, tts_lang)
-                    # Save the raw bytes so it survives app reruns
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
-                # Auto-close the camera to clean up the screen, then refresh
                 st.session_state.camera_active = False
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
-    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -181,7 +176,6 @@ with tab1:
 with tab2:
     st.header("What's Around Me?")
     
-    # NEW: Configurable event count slider
     event_count = st.slider("How many events do you want to find?", min_value=3, max_value=10, value=8)
     
     col1, col2 = st.columns(2)
@@ -195,8 +189,6 @@ with tab2:
             st.warning("Please allow location access in the sidebar first!")
         else:
             with st.spinner(f"Scouting the live web for your area (in {target_lang})..."):
-                genai.configure(api_key=api_keys[0])
-                model = genai.GenerativeModel('gemini-3.5-flash-lite')
                 loc_context = get_location_context()
                 
                 if want_food:
@@ -220,17 +212,30 @@ with tab2:
                     Write the entire response strictly in {target_lang}.
                     """
                 
-                # Using Google Search Grounding to find live web results
-                response = model.generate_content(
-                    prompt,
-                    tools="google_search_retrieval"
-                )
-                recommendations = response.text
+                success = False
+                for key in api_keys:
+                    try:
+                        genai.configure(api_key=key)
+                        model = genai.GenerativeModel('gemini-3.5-flash-lite')
+                        
+                        if want_food:
+                            response = model.generate_content(prompt)
+                        else:
+                            response = model.generate_content(prompt, tools="google_search_retrieval")
+                            
+                        recommendations = response.text
+                        success = True
+                        break
+                    except ResourceExhausted:
+                        st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                        continue
                 
-                st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
-                st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
-                
-                st.markdown(recommendations)
+                if not success:
+                    st.error("⚠️ All provided API keys have reached their daily limits.")
+                else:
+                    st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
+                    st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
+                    st.markdown(recommendations)
 
 # --- TAB 3: Persistent Chat ---
 with tab3:
@@ -260,12 +265,22 @@ with tab3:
         """
         
         with st.spinner("Thinking..."):
-            genai.configure(api_key=api_keys[0])
-            model = genai.GenerativeModel('gemini-3.5-flash-lite')
-            response = model.generate_content(chat_prompt)
-            answer = response.text
+            success = False
+            for key in api_keys:
+                try:
+                    genai.configure(api_key=key)
+                    model = genai.GenerativeModel('gemini-3.5-flash-lite')
+                    response = model.generate_content(chat_prompt)
+                    answer = response.text
+                    success = True
+                    break
+                except ResourceExhausted:
+                    st.toast("Key limit reached, swapping to backup key...", icon="🔄")
+                    continue
             
-        with st.chat_message("assistant"):
-            st.markdown(answer)
-            
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        if not success:
+            st.error("⚠️ All provided API keys have reached their daily limits.")
+        else:
+            with st.chat_message("assistant"):
+                st.markdown(answer)
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
