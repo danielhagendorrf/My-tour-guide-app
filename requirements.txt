@@ -1,0 +1,5 @@
+streamlit
+google-generativeai
+gTTS
+pillow
+streamlit-geolocation
