@@ -4,6 +4,7 @@ from gtts import gTTS
 from io import BytesIO
 from PIL import Image
 from datetime import datetime
+import requests
 from streamlit_geolocation import streamlit_geolocation
 from streamlit_back_camera_input import back_camera_input
 from google.api_core.exceptions import ResourceExhausted
@@ -37,6 +38,29 @@ def clean_for_audio(text):
     """Removes markdown formatting so the text-to-speech sounds natural."""
     return text.replace("*", "").replace("#", "").replace('"', "").replace("_", "")
 
+def fetch_live_search_tavily(query, api_key):
+    """Professional RAG search using Tavily API (built for AI agents)."""
+    if not api_key:
+        return "[Live Search Disabled: No Tavily API Key provided. Relying purely on AI internal memory.]"
+    
+    url = "https://api.tavily.com/search"
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "search_depth": "basic",
+        "include_answer": False,
+        "max_results": 5
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        data = res.json()
+        if "results" in data:
+            snippets = [r.get("content", "") for r in data["results"]]
+            return "\n- ".join(snippets)
+    except Exception as e:
+        return f"[Live Search Error: {e}]"
+    return "No recent events or live data found on the web."
+
 # -----------------------------------------
 # 3. APP INITIALIZATION & SIDEBAR
 # -----------------------------------------
@@ -58,15 +82,25 @@ if "camera_active" not in st.session_state:
     st.session_state.camera_active = False
 if "last_image_id" not in st.session_state:
     st.session_state.last_image_id = None
+if "pending_image" not in st.session_state:
+    st.session_state.pending_image = None
 
 with st.sidebar:
     st.header("⚙ Setup & Context")
     
+    # Setup Gemini Keys
     api_keys = st.secrets.get("GEMINI_API_KEYS", [])
     if not api_keys:
         manual_key = st.text_input("Enter Gemini API Key", type="password")
         if manual_key:
             api_keys = [manual_key]
+            
+    # Setup Tavily Key
+    tavily_key = st.secrets.get("TAVILY_API_KEY", "")
+    if not tavily_key:
+        manual_tavily = st.text_input("Enter Tavily Search Key (Optional)", type="password")
+        if manual_tavily:
+            tavily_key = manual_tavily
             
     if not api_keys:
         st.warning("Please enter your Gemini API Key in the sidebar to begin.")
@@ -101,29 +135,37 @@ with tab1:
     
     if st.button("📷 Open / Close Camera"):
         st.session_state.camera_active = not st.session_state.camera_active
+        # Clear any pending images if we are toggling the camera
+        st.session_state.pending_image = None
         st.rerun()
         
     image_source = None
     trigger_generation = False
     
-    if st.session_state.camera_active:
+    # CAMERA UX FIX: If a photo is pending, hide the camera and show success message
+    if st.session_state.pending_image:
+        st.success("📸 Photo captured! Analyzing landmark...")
+        image_source = st.session_state.pending_image
+        trigger_generation = True
+        
+    elif st.session_state.camera_active:
         st.info("💡 **Tip:** Tap directly on the camera video feed to snap your photo.")
         camera_photo = back_camera_input()
         
         if camera_photo:
-            image_source = camera_photo
-            # If this is a brand new photo, trigger the AI automatically!
+            # Triggered the exact moment the user taps the video feed
             if st.session_state.last_image_id != camera_photo.getvalue():
                 st.session_state.last_image_id = camera_photo.getvalue()
-                trigger_generation = True
+                st.session_state.pending_image = camera_photo
+                st.rerun() # Instantly refreshes the UI to hide the camera and show the success banner
     else:
         uploaded_file = st.file_uploader("Or upload from your camera roll", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             image_source = uploaded_file
-            # For manual uploads, we keep the button so you can confirm the right file
             if st.button("Generate Audio Guide"):
                 trigger_generation = True
 
+    # GENERATION LOGIC
     if image_source and trigger_generation:
         image = Image.open(image_source)
         try:
@@ -136,7 +178,6 @@ with tab1:
             Write the entire response strictly in {target_lang}.
             """
             
-            st.write("### Generating Your Guide...")
             message_placeholder = st.empty()
             temp_guide_text = ""
             success = False
@@ -157,11 +198,10 @@ with tab1:
                     break 
                     
                 except ResourceExhausted:
-                    st.toast("Key limit reached, swapping to backup...", icon="🔄")
                     continue
             
             if not success:
-                st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
+                st.error("⚠️ Rate limit reached. Wait 60 seconds or swap Gemini keys in Streamlit Secrets.")
             else:
                 st.session_state.guide_text = temp_guide_text
                 
@@ -170,12 +210,15 @@ with tab1:
                     audio_file = generate_audio(cleaned_text, tts_lang)
                     st.session_state.guide_audio = audio_file.getvalue() 
                 
+                # Cleanup state so the UI resets cleanly
                 st.session_state.camera_active = False
+                st.session_state.pending_image = None
                 st.rerun()
     
         except Exception as e:
             st.error(f"⚠️ An unexpected error occurred. \n\n**Error Details:** {e}")
 
+    # ALWAYS display the saved guide if it exists
     if st.session_state.guide_text:
         st.write("---")
         st.write("### Your Latest Guide:")
@@ -187,43 +230,35 @@ with tab1:
 with tab2:
     st.header("What's Around Me?")
     
-    event_count = st.slider("How many events do you want to find?", min_value=3, max_value=10, value=8)
+    # 1. Custom User Search Box
+    custom_search = st.text_input("Looking for something specific?", placeholder="e.g., traditional knife forging, hidden matcha cafes, vintage kimonos...")
     
-    col1, col2 = st.columns(2)
+    # 2. Configurable Sliders & Buttons
+    event_count = st.slider("How many options do you want?", min_value=3, max_value=10, value=5)
+    
+    col1, col2, col3 = st.columns(3)
     with col1:
         want_food = st.button("🍽️ Visit & Eat")
     with col2:
         want_events = st.button("🎉 Trending Events")
+    with col3:
+        want_custom = st.button("🔍 Find Custom")
 
-    if want_food or want_events:
+    # Determine which action the user took
+    trigger = None
+    if want_food: trigger = "food"
+    elif want_events: trigger = "events"
+    elif want_custom and custom_search: trigger = "custom"
+    elif want_custom and not custom_search:
+        st.warning("Please type something in the custom search box first!")
+
+    if trigger:
         if not st.session_state.lat:
             st.warning("Please allow location access in the sidebar first!")
         else:
-            with st.spinner(f"Scouting the area (in {target_lang})..."):
+            with st.spinner(f"Scouting the live web for your area (in {target_lang})..."):
                 loc_context = get_location_context()
                 current_date = datetime.now().strftime("%A, %B %d, %Y")
-                
-                if want_food:
-                    pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
-                    prompt = f"""
-                    {loc_context}
-                    You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
-                    suggest 2 places to visit and 2 places to eat nearby. 
-                    Tailor these suggestions specifically to the following user preferences: {pref_text}.
-                    Explain exactly why these nearby spots fit their specific tastes.
-                    Write the entire response strictly in {target_lang}.
-                    """
-                else:
-                    prompt = f"""
-                    {loc_context}
-                    Today's date is {current_date}. 
-                    Act as an elite local event scout with deep knowledge of Japanese seasonal events and pop-ups.
-                    Based purely on these exact coordinates and the current date/season, deduce what city and neighborhood I am in.
-                    Then, find {event_count} trending, seasonal, or special events (festivals, night illuminations, markets, exhibitions) happening nearby over the next few days.
-                    Prioritize temporary/seasonal events (e.g., autumn illuminations, specific local festivals) over permanent museums.
-                    For each event, include a brief description and the estimated travel time/ride time from my current coordinates.
-                    Write the entire response strictly in {target_lang}.
-                    """
                 
                 success = False
                 last_error = None
@@ -232,14 +267,49 @@ with tab2:
                     try:
                         genai.configure(api_key=key)
                         
-                        if want_food:
-                            # Lite model is fine for general food recommendations
+                        if trigger == "food":
+                            pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
+                            prompt = f"""
+                            {loc_context}
+                            You are a highly personalized travel concierge. Based ONLY on the exact coordinates provided, 
+                            suggest {event_count} places to visit and eat nearby. 
+                            Tailor these suggestions specifically to the following user preferences: {pref_text}.
+                            Explain exactly why these nearby spots fit their specific tastes.
+                            Write the entire response strictly in {target_lang}.
+                            """
                             model = genai.GenerativeModel('gemini-3.5-flash-lite')
+                            response = model.generate_content(prompt)
+                        
                         else:
-                            # We MUST use the big 3.5-Flash model here so it has the deep memory to know local events without search
-                            model = genai.GenerativeModel('gemini-3.5-flash')
+                            # 1. Ask the AI what city we are in based on GPS coordinates
+                            model_lite = genai.GenerativeModel('gemini-3.5-flash-lite')
+                            city_response = model_lite.generate_content(f"Based on {loc_context}, what city and country am I in? Reply ONLY with the city name.")
+                            city_name = city_response.text.strip()
                             
-                        response = model.generate_content(prompt)
+                            # 2. RAG Search (Events vs Custom)
+                            if trigger == "events":
+                                search_query = f"events festivals popups {city_name} today {current_date}"
+                            else:
+                                search_query = f"{custom_search} {city_name} near {st.session_state.lat}, {st.session_state.lon}"
+                                
+                            live_web_data = fetch_live_search_tavily(search_query, tavily_key)
+                            
+                            # 3. Inject the live internet text into the main prompt
+                            prompt = f"""
+                            {loc_context} (City: {city_name})
+                            Today's date is {current_date}. 
+                            
+                            Here is raw, up-to-the-minute data pulled from the live internet:
+                            {live_web_data}
+                            
+                            Act as an elite local scout. Based on your massive internal knowledge AND the live web data provided above, 
+                            {"find " + str(event_count) + " trending, pop-up, or special seasonal events happening nearby right now." if trigger == "events" else "find " + str(event_count) + " highly specific recommendations matching the user's request: '" + custom_search + "'."}
+                            For each recommendation, include a brief description and the estimated travel time from my current coordinates.
+                            Write the entire response strictly in {target_lang}.
+                            """
+                            model = genai.GenerativeModel('gemini-3.5-flash')
+                            response = model.generate_content(prompt)
+                            
                         recommendations = response.text
                         success = True
                         break
@@ -256,7 +326,7 @@ with tab2:
                     else:
                         st.error("⚠️ Rate limit reached. Wait 60 seconds or swap keys in Streamlit Secrets.")
                 else:
-                    st.session_state.chat_history.append({"role": "user", "content": "What is around me?"})
+                    st.session_state.chat_history.append({"role": "user", "content": f"Find me: {trigger} (Custom: {custom_search if custom_search else 'N/A'})"})
                     st.session_state.chat_history.append({"role": "assistant", "content": recommendations})
                     st.markdown(recommendations)
 
