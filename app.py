@@ -54,11 +54,18 @@ if "lon" not in st.session_state:
 with st.sidebar:
     st.header("⚙ Setup & Context")
     
-    # Automatically grab the key from Streamlit Secrets if it exists
-    # If not, fall back to the manual input box
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
-    if not api_key:
-        api_key = st.text_input("Enter Gemini API Key", type="password")
+    # Look for the list of keys. If it doesn't exist, return an empty list.
+    api_keys = st.secrets.get("GEMINI_API_KEYS", [])
+    
+    # If the list is empty, force the user to type one in manually
+    if not api_keys:
+        manual_key = st.text_input("Enter Gemini API Key", type="password")
+        if manual_key:
+            api_keys = [manual_key] # Turn it into a list so the rest of the code works
+            
+    if not api_keys:
+        st.warning("Please enter your Gemini API Key in the sidebar to begin.")
+        st.stop()
     
     st.subheader("📍 Where am I?")
     st.write("Tap below to share your location for nearby recommendations.")
@@ -83,7 +90,6 @@ if not api_key:
     st.warning("Please enter your Gemini API Key in the sidebar to begin.")
     st.stop()
 
-genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-3.5-flash-lite')
 
 # -----------------------------------------
@@ -173,6 +179,7 @@ with tab2:
             st.warning("Please allow location access in the sidebar first!")
         else:
             with st.spinner(f"Scouting the area based on your preferences (in {target_lang})..."):
+                genai.configure(api_key=api_keys[0])
                 loc_context = get_location_context()
                 pref_text = f"Food preferences: {', '.join(USER_PREFERENCES['food'])}. Activity preferences: {', '.join(USER_PREFERENCES['activities'])}."
                 
@@ -225,6 +232,7 @@ with tab3:
         """
         
         with st.spinner("Thinking..."):
+            genai.configure(api_key=api_keys[0])
             response = model.generate_content(chat_prompt)
             answer = response.text
             
